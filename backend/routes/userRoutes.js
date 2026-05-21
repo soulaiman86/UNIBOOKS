@@ -3,25 +3,53 @@ const router = express.Router();
 const pool = require('../db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// --- إعدادات رفع صور البروفايل ---
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const dir = 'uploads/profiles';
+        // إنشاء المجلد إذا لم يكن موجوداً
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+        // تسمية الصورة بـ timestamp + الاسم الأصلي لتفادي تكرار الأسماء
+        cb(null, Date.now() + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({ storage: storage });
 
 // مسار تسجيل مستخدم جديد
-router.post('/register', async (req, res) => {
+// أضفنا upload.single لاستقبال ملف الصورة من الحقل المسمى 'profile_image'
+router.post('/register', upload.single('profile_image'), async (req, res) => {
     try {
         const { name, email, password, role } = req.body;
+        
+        // جلب مسار الصورة إذا تم رفعها، وإلا نضع null
+        const profileImagePath = req.file ? `/uploads/profiles/${req.file.filename}` : null;
 
         // 1. تشفير كلمة المرور
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-        // 2. إدخال المستخدم بكلمة المرور المشفرة
+        // 2. إدخال المستخدم مع الصورة (العمود الجديد profile_image)
         const newUser = await pool.query(
-            "INSERT INTO users (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role",
-            [name, email, hashedPassword, role]
+            "INSERT INTO users (name, email, password_hash, role, profile_image) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, role, profile_image",
+            [name, email, hashedPassword, role, profileImagePath]
         );
 
-        res.json({ message: "The user has been successfully registered!", user: newUser.rows[0] });
+        res.json({ 
+            message: "The user has been successfully registered!", 
+            user: newUser.rows[0] 
+        });
     } catch (err) {
-        console.error(err.message);
+        console.error("Register Error:", err.message);
         res.status(500).send("Server error");
     }
 });
@@ -45,21 +73,21 @@ router.post('/login', async (req, res) => {
         }
 
         // 3. إنشاء التوكن (JWT)
-        // سنستخدم 'mySecretKey' مؤقتاً، في الواقع نضعها في ملف .env
         const token = jwt.sign(
             { id: user.rows[0].id, role: user.rows[0].role },
             process.env.JWT_SECRET || 'mySecretKey',
             { expiresIn: '24h' }
         );
 
-        // 4. إرسال الرد
+        // 4. إرسال الرد (أضفنا الصورة الشخصية في الرد ليتمكن الفرونت من تخزينها)
         res.json({
             message: "Login successful!",
             token,
             user: {
                 id: user.rows[0].id,
                 name: user.rows[0].name,
-                role: user.rows[0].role
+                role: user.rows[0].role,
+                profile_image: user.rows[0].profile_image // جلب الصورة عند تسجيل الدخول
             }
         });
 
